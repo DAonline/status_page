@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="120">
+<meta name="robots" content="noindex">
+<title>DA-Online Status</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #ffffff; --text: #1b1f24; --muted: #5b6573; --line: #e3e6ea;
+    --ok: #1f8a4c; --ok-bg: #e6f4ec;
+    --warn: #a86400; --warn-bg: #fdf1dc;
+    --part: #c2410c; --part-bg: #fde8dc;
+    --down: #b42318; --down-bg: #fbe4e2;
+    --maint: #2557a7; --maint-bg: #e3ecfa;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151a; --card: #1b1f26; --text: #e8eaed; --muted: #9aa3ad; --line: #2c323b;
+      --ok: #4cc283; --ok-bg: #173324;
+      --warn: #f0b04a; --warn-bg: #3a2c12;
+      --part: #f28a52; --part-bg: #3d2215;
+      --down: #f07167; --down-bg: #3d1a18;
+      --maint: #7aa7f0; --maint-bg: #1a2a45;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 32px 16px 48px; }
+  h1 { font-size: 1.5rem; margin: 0 0 4px; }
+  h2 { font-size: 1.1rem; margin: 32px 0 12px; }
+  .muted { color: var(--muted); font-size: .9rem; }
+  .banner { margin-top: 24px; padding: 20px; border-radius: 10px; font-weight: 600; font-size: 1.15rem;
+    display: flex; align-items: center; gap: 12px; }
+  .dot { width: 12px; height: 12px; border-radius: 50%; flex: none; background: currentColor; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; }
+  .incident { padding: 18px; margin-bottom: 12px; }
+  .incident h3 { margin: 0 0 4px; font-size: 1.05rem; }
+  .update { margin-top: 12px; padding-left: 14px; border-left: 3px solid var(--line); }
+  .update p { margin: 2px 0 0; }
+  .bg-betrieb { background: var(--ok-bg); color: var(--ok); }
+  .bg-eingeschraenkt { background: var(--warn-bg); color: var(--warn); }
+  .bg-teilausfall { background: var(--part-bg); color: var(--part); }
+  .bg-ausfall { background: var(--down-bg); color: var(--down); }
+  .bg-wartung { background: var(--maint-bg); color: var(--maint); }
+  footer { margin-top: 40px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>DA-Online Status</h1>
+  <div class="muted" id="aktualisiert"></div>
+  <div class="banner" id="banner"><span class="dot"></span><span id="banner-text">Status wird geladen …</span></div>
+  <noscript><p>Für die Statusanzeige wird JavaScript benötigt.</p></noscript>
+
+  <section id="aktuell-wrap" hidden>
+    <h2>Aktuelle Meldungen</h2>
+    <div id="aktuell"></div>
+  </section>
+
+  <section id="verlauf-wrap" hidden>
+    <h2>Vergangene Meldungen</h2>
+    <div id="verlauf"></div>
+  </section>
+
+  <footer class="muted">Diese Seite aktualisiert sich alle 2 Minuten automatisch.</footer>
+</main>
+
+<!--
+  STATUSDATEN — nur diesen Block ändern.
+  status: betrieb | eingeschraenkt | teilausfall | ausfall | wartung
+  Meldung art: stoerung | wartung
+  Meldung phase: untersucht | identifiziert | beobachtet | behoben | geplant | laeuft | abgeschlossen
+  Zeiten als ISO-8601 mit Offset (date -Iseconds). Updates: neuestes zuerst.
+  Abgeschlossene Meldungen blendet die Seite 2 Tage nach "ende" automatisch aus.
+-->
+<script type="application/json" id="status-daten">
+{
+  "aktualisiert": "2026-11-20T14:32:50+01:00",
+  "status": "betrieb",
+  "meldungen": []
+}
+</script>
+
+<script>
+(function () {
+  var STATUS = {
+    betrieb:        { banner: "DA-Online ist betriebsbereit" },
+    wartung:        { banner: "Wartungsarbeiten an DA-Online" },
+    eingeschraenkt: { banner: "DA-Online ist eingeschränkt verfügbar" },
+    teilausfall:    { banner: "Teilweiser Ausfall von DA-Online" },
+    ausfall:        { banner: "DA-Online ist derzeit nicht erreichbar" }
+  };
+  var PHASE = {
+    untersucht: "Wird untersucht", identifiziert: "Ursache identifiziert", beobachtet: "Wird beobachtet",
+    behoben: "Behoben", geplant: "Geplant", laeuft: "Läuft", abgeschlossen: "Abgeschlossen"
+  };
+  var FERTIG = { behoben: true, abgeschlossen: true };
+
+  function el(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = text;
+    return e;
+  }
+  function zeit(iso) {
+    var d = new Date(iso);
+    if (isNaN(d)) return iso || "";
+    return d.toLocaleString("de-DE", { dateStyle: "medium", timeStyle: "short", timeZone: "Europe/Berlin" }) + " Uhr";
+  }
+  function meldung(m) {
+    var box = el("div", "card incident");
+    box.appendChild(el("h3", null, m.titel));
+    var meta = PHASE[m.phase] || m.phase;
+    meta += (m.ende ? " · von " : " · seit ") + zeit(m.beginn);
+    if (m.ende) meta += " · bis " + zeit(m.ende);
+    box.appendChild(el("div", "muted", meta));
+    (m.updates || []).forEach(function (u) {
+      var up = el("div", "update");
+      up.appendChild(el("div", "muted", zeit(u.zeit)));
+      up.appendChild(el("p", null, u.text));
+      box.appendChild(up);
+    });
+    return box;
+  }
+
+  var banner = document.getElementById("banner");
+  var daten;
+  try {
+    daten = JSON.parse(document.getElementById("status-daten").textContent);
+  } catch (e) {
+    banner.className = "banner bg-eingeschraenkt";
+    document.getElementById("banner-text").textContent = "Statusdaten konnten nicht gelesen werden.";
+    return;
+  }
+
+  document.getElementById("aktualisiert").textContent = "Zuletzt aktualisiert: " + zeit(daten.aktualisiert);
+
+  var s = STATUS[daten.status] ? daten.status : "eingeschraenkt";
+  banner.className = "banner bg-" + s;
+  document.getElementById("banner-text").textContent = STATUS[s].banner;
+
+  // Abgeschlossene Meldungen nur 2 Tage nach ihrem Ende anzeigen; laufende immer.
+  var GRENZE = Date.now() - 2 * 24 * 60 * 60 * 1000;
+  var aktiv = [], vorbei = [];
+  (daten.meldungen || []).forEach(function (m) {
+    if (!FERTIG[m.phase]) { aktiv.push(m); return; }
+    var ende = new Date(m.ende || m.beginn).getTime();
+    if (isNaN(ende) || ende >= GRENZE) vorbei.push(m);
+  });
+  if (aktiv.length) {
+    document.getElementById("aktuell-wrap").hidden = false;
+    aktiv.forEach(function (m) { document.getElementById("aktuell").appendChild(meldung(m)); });
+  }
+  if (vorbei.length) {
+    document.getElementById("verlauf-wrap").hidden = false;
+    vorbei.slice(0, 10).forEach(function (m) { document.getElementById("verlauf").appendChild(meldung(m)); });
+  }
+})();
+</script>
+</body>
+</html>
